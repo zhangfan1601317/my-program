@@ -1,7 +1,7 @@
-//在MPC模型中将h改为Q,修改h观察迭代过程,增加h的初始值
+//在MPC模型中将h改为Q,拉速保持不变1.2m/min
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
-
+#include <cuda_occupancy.h>
 #include <stdio.h>
 #include <cstdlib>
 #include <ctime>
@@ -9,6 +9,7 @@
 #include <fstream>
 #include "book.h"
 #include "gridcheck.h"
+#include <string>
 using namespace std;
 # define Section 12  // number of cooling sections
 # define CoolSection 8
@@ -16,12 +17,12 @@ using namespace std;
 # define StaticIter 50
 # define M 3
 # define N M+2*CoolSection
-# define TestIter 500
-# define limit 501//limit>=tnpts/num_iter
+# define TestIter 1000
+# define limit 1001//limit>=tnpts/num_iter
 
 float ccml[Section + 1] = { 0.0,0.2,0.4,0.6,0.8,1.0925,2.27,4.29,5.831,9.6065,13.6090,19.87014,28.599 }; // The cooling sections
-//float H_Init[Section] = { 1380,1170,980,800,1223.16,735.05,424.32,392.83,328.94,281.64,246.16,160.96 };  // The heat transfer coefficients in the cooling sections
-float H_Init[Section] = { 1400,1200,1000,800,1200,750,400,400,350,300,250,150 };
+float H_Init[Section] = { 1380,1170,980,800,1223.16,735.05,424.32,392.83,328.94,281.64,246.16,160.96 };  // The heat transfer coefficients in the cooling sections
+//float H_Init[Section] = { 1400,1200,1000,800,1200,750,400,400,350,300,250,150 };
 //float H_Init[Section] = { 1500,1300,1100,900,1300,850,500,500,450,400,350,250 };
 //float H_Init_Temp[Section] = { 1380,1170,980,800,1223.16,735.05,424.32,392.83,328.94,281.64,246.16,160.96 };  // The heat transfer coefficients in the cooling sections
 float H_Init_Temp[Section] = { 0 };
@@ -42,7 +43,7 @@ float alfa[limit] = { 1.0 };
 float g[N] = { 0 };
 float testArray[TestIter] = { 0 };
 
-__global__ void addKernel(float *T_New, float *T_Last, float *ccml, float *H_Init, float dx, float dy, float dz, float tao, int nx, int ny, int nz, bool disout,float Vcast)
+__global__ void addKernel(float *T_New, float *T_Last, float *ccml, float *H_Init, float dx, float dy, float dz, float tao, int nx, int ny, int nz, bool disout,float Vcast,float T_casting)
 {
 	int i = threadIdx.x;
 	int m = threadIdx.y;
@@ -52,7 +53,7 @@ __global__ void addKernel(float *T_New, float *T_Last, float *ccml, float *H_Ini
 	int D = nx;
 
 	float pho, Ce, lamd; // physical parameters pho represents desity, Ce is specific heat and lamd is thermal conductivity
-	float a, T_Up, T_Down, T_Right, T_Left, T_Forw, T_Back, h = 100.0, Tw = 30.0, T_Cast = 1558.0; //Vcast = -0.02
+	float a, T_Up, T_Down, T_Right, T_Left, T_Forw, T_Back, h = 100.0, Tw = 30.0; //Vcast = -0.02, T_Cast = 1558.0
 
 	if (disout) {
 		Physicial_Parameters(T_Last[idx], &pho, &Ce, &lamd);
@@ -60,7 +61,7 @@ __global__ void addKernel(float *T_New, float *T_Last, float *ccml, float *H_Ini
 		h = Boundary_Condition(j, dy, ccml, H_Init);
 		if (j == 0) //1
 		{
-			T_New[idx] = T_Cast;
+			T_New[idx] = T_casting;
 		}
 
 		else if (j == (ny - 1) && i != 0 && i != (nx - 1) && m != 0 && m != (nz - 1)) //10
@@ -305,7 +306,7 @@ __global__ void addKernel(float *T_New, float *T_Last, float *ccml, float *H_Ini
 		h = Boundary_Condition(j, dy, ccml, H_Init);
 		if (j == 0) //1
 		{
-			T_Last[idx] = T_Cast;
+			T_Last[idx] = T_casting;
 		}
 
 		else if (j == (ny - 1) && i != 0 && i != (nx - 1) && m != 0 && m != (nz - 1)) //10
@@ -548,7 +549,7 @@ int main()
 	const int nx = 21, ny = 3000, nz = 21;   // nx is the number of grid in x direction, ny is the number of grid in y direction.
 	int num_blocks = 1, num_threadsx = 1, num_threadsy = 1;// num_threadsz = 1; // block number(1D)  thread number in x and y dimension(2D)
 	int tnpts = 10001;  // time step
-	float T_Cast = 1558.0, Lx = 0.25, Ly = 28.599, Lz = 0.25, t_final = 2000.0, dx, dy, dz, tao;  // T_Cast is the casting temperature Lx and Ly is the thick and length of steel billets
+	float  Lx = 0.25, Ly = 28.599, Lz = 0.25, t_final = 2000.0, dx, dy, dz, tao;  //T_Cast = 1558.0, T_Cast is the casting temperature Lx and Ly is the thick and length of steel billets
 	
 	float *T_Init;
 	num_threadsx = nx;
@@ -557,10 +558,47 @@ int main()
 
 	T_Init = (float*)calloc(nx*ny*nz,sizeof(float));  // Initial condition
 
-	for (int m = 0; m < nz; m++)
+	//for (int m = 0; m < nz; m++)
+	//	for (int j = 0; j < ny; j++)
+	//       for (int i = 0; i < nx; i++)
+	//		   T_Init[nx * ny * m + j * nx + i] = T_Cast;  // give the initial condition
+
+	//读取txt文件
+	ifstream in("F:\\Temperature3DGPU_shared_memmory_Static.txt");
+	if (!in)
+	{
+		cerr << "open the filename failed!" << endl;
+		return 1;
+	}
+	for (int j = 0; j < ny; j++)
+	{
+		for (int i = 0; i < nx; i++)
+		{
+			for (int m = 0; m < nz; m++)
+				in >> T_Init[nx * nz * j + i * nz + m];
+		}
+	}
+	in.close();
+
+	ofstream fout;
+	fout.open("F:\\data_zf\\testTinit.txt");
+	if (!fout)
+		cout << "testTinit is not open" << endl;
+	else
+	{
 		for (int j = 0; j < ny; j++)
-	       for (int i = 0; i < nx; i++)
-			   T_Init[nx * ny * m + j * nx + i] = T_Cast;  // give the initial condition
+		{
+			for (int i = 0; i < nx; i++)
+			{
+				for (int m = 0; m < nz; m++)
+					fout << T_Init[nx * nz * j + i * nz + m] << ", ";
+				fout << endl;
+			}
+			fout << endl;
+		}
+	}
+	fout.close();
+
 
 	dx = Lx / (nx - 1);            // the grid size x
 	dy = Ly / (ny - 1);            // the grid size y
@@ -568,7 +606,7 @@ int main()
 	tao = t_final / (tnpts - 1);   // the time step size
 	//gridcheck(dx, dy, tao);
 
-	cout << "Casting Temperature " << T_Cast << endl;
+	//cout << "Casting Temperature " << T_Cast << endl;
 	cout << "The length of steel billets(m) " << Ly << endl;
 	cout << "The width of steel billets(m) " << Lz << endl;
 	cout << "The thick of steel billets(m) " << Lx << endl;
@@ -620,7 +658,7 @@ cudaError_t addWithCuda(float *T_Init, float dx, float dy, float dz, float tao, 
 	float **JacobianMatrix, *JacobianG0, *JacobianG1, *JacobianG2, *TZ_gradient,*partionQ;
 	float **JacobinTZgradient, **TZ_gradientElement, **TZ_gradientElementOne;
 	float dh = 10.0,dQ=1.0, arf1, arf2, step = -0.0001,T_bmax=1100,Ts=1462,Tl= 1518.0,Tu=-100,Td=200;
-	float Vcast = -0.02;
+	float Vcast = -0.02, T_casting = 1558.0;
 	const int Num_Iter = 10, PrintLabel = 0;// The result can be obtained by every Num_Iter time step
 	volatile bool dstOut = true;
 
@@ -632,6 +670,7 @@ cudaError_t addWithCuda(float *T_Init, float dx, float dy, float dz, float tao, 
 	float gtest[limit][N] = { 0 };
 	float htest[limit][Section] = { 0 };
 	float fitness[limit] = { 0 };
+	float gfitness[limit] = { 0 };
 
 	T_Result = (float *)calloc(nx * ny * nz, sizeof(float)); // The temperature of steel billets
 	Delta_H_Init = (float*)calloc(CoolSection, sizeof(float));
@@ -692,16 +731,7 @@ cudaError_t addWithCuda(float *T_Init, float dx, float dy, float dz, float tao, 
 	dim3 threadsPerBlock(num_threadsx, num_threadsy);
 	float SurfaceError[TestIter / 10+1][CoolSection];
 	for (int t = 0; t < TestIter*10+1; t++)
-	{		
-		//不改变拉速
-		//if(t / Num_Iter >= 2* StaticIter&&t / Num_Iter < 4 * StaticIter)//100-200
-		//	Vcast = -0.017;
-		//else if(t / Num_Iter >= 4 * StaticIter&&t / Num_Iter < 6 * StaticIter)//200-300
-		//	Vcast = -0.02;
-		//else if (t / Num_Iter >= 6 * StaticIter&&t / Num_Iter < 8 * StaticIter)//300-400
-		//	Vcast = -0.023;
-		//else//400以后
-		//	Vcast = -0.02;		
+	{			
 		if (t % Num_Iter == 0)
 		{
 			int iter = t / Num_Iter;
@@ -717,7 +747,7 @@ cudaError_t addWithCuda(float *T_Init, float dx, float dy, float dz, float tao, 
 					HANDLE_ERROR(cudaMemcpy(dev_H_Init, H_Init_Temp, Section * sizeof(float), cudaMemcpyHostToDevice));
 					for (int PNum = 0; PNum < Num_Iter; PNum++)
 					{
-						addKernel << <num_blocks, threadsPerBlock >> >(dev_T_New, dev_T_Last, dev_ccml, dev_H_Init, dx, dy, dz, tao, nx, ny, nz, dstOut,Vcast);
+						addKernel << <num_blocks, threadsPerBlock >> >(dev_T_New, dev_T_Last, dev_ccml, dev_H_Init, dx, dy, dz, tao, nx, ny, nz, dstOut,Vcast,T_casting);
 						dstOut = !dstOut;
 					}
 
@@ -759,7 +789,7 @@ cudaError_t addWithCuda(float *T_Init, float dx, float dy, float dz, float tao, 
 
 					for (int PNum = 0; PNum < Num_Iter; PNum++)//预测时段长度
 					{
-						addKernel << <num_blocks, threadsPerBlock >> >(dev_T_New, dev_T_Last, dev_ccml, dev_H_Init, dx, dy, dz, tao, nx, ny, nz, dstOut,Vcast);
+						addKernel << <num_blocks, threadsPerBlock >> >(dev_T_New, dev_T_Last, dev_ccml, dev_H_Init, dx, dy, dz, tao, nx, ny, nz, dstOut,Vcast,T_casting);
 						dstOut = !dstOut;
 					}
 
@@ -782,6 +812,11 @@ cudaError_t addWithCuda(float *T_Init, float dx, float dy, float dz, float tao, 
 						Mean_TCenterElement[m][column] = Mean_TCenter[column + MoldSection];
 						TZ_gradientElement[m][column] = TZ_gradient[column + MoldSection];
 					}					
+					/*if (iter >= StaticIter) {
+						g[0] = Mean_TSurface[MoldSection] - T_bmax;
+						g[1] = Mean_TPoint[MoldSection]-Ts;
+						g[2] = Mean_TCenter[MoldSection + CoolSection - 2] - Tl;
+					}*/
 				}
 				/*for (int i = 0; i < CoolSection; i++) {
 					printf("TZ_gradient=%f  ",TZ_gradient[i]);
@@ -792,8 +827,8 @@ cudaError_t addWithCuda(float *T_Init, float dx, float dy, float dz, float tao, 
 				if (iter >= StaticIter)
 				{
 					g[0] = Mean_TSurfaceElement[0][0] - T_bmax;
-					g[2] = Mean_TCenterElement[MoldSection+1][MoldSection+1] - Tl;//液相穴长度，这个衡量方法不对。
-					g[1] = Point_TSurfaceElement[MoldSection] - Ts;//感觉这个是对的
+					g[2] = Mean_TCenterElement[MoldSection + 1][MoldSection + 1] - Tl;
+					g[1] = Point_TSurfaceElement[MoldSection] - Ts;
 					/*printf("g[0]=%f\n", g[0]);
 					printf("g[1]=%f\n", g[1]);
 					printf("g[2]=%f\n", g[2]);*/
@@ -805,7 +840,7 @@ cudaError_t addWithCuda(float *T_Init, float dx, float dy, float dz, float tao, 
 					}				
 				}
 				for (int temp = 0; temp < M; temp++)
-					fitness[iter] += lamda[iter][temp] * g[temp];
+					gfitness[iter] += lamda[iter][temp] * g[temp];
 				for (int i = 0; i < N; i++)
 				{
 					if (iter < StaticIter)
@@ -876,9 +911,11 @@ cudaError_t addWithCuda(float *T_Init, float dx, float dy, float dz, float tao, 
 					
 				}
 				Delta_H_Init[temp] += H_Init[temp] - H_Init_Final[temp];//增加的h的增量部分
-				fitness[iter] += lamda[iter][temp + M] * g[temp + M];
-				fitness[iter] += lamda[iter][temp + M + CoolSection] * g[temp + M + CoolSection];
-				fitness[iter]+= H_Init[temp] - H_Init_Final[temp];
+				gfitness[iter] += lamda[iter][temp + M] * g[temp + M];
+				gfitness[iter] += lamda[iter][temp + M + CoolSection] * g[temp + M + CoolSection];
+				fitness[iter]+= pow(H_Init[temp] - H_Init_Final[temp],2);
+				gfitness[iter] += pow(H_Init[temp] - H_Init_Final[temp], 2);
+
 				
 				if (iter > StaticIter)
 				{
@@ -952,13 +989,15 @@ cudaError_t addWithCuda(float *T_Init, float dx, float dy, float dz, float tao, 
 		}
 		     
 			HANDLE_ERROR(cudaMemcpy(dev_H_Init, H_Init_Temp, Section * sizeof(float), cudaMemcpyHostToDevice));
-			addKernel << <num_blocks, threadsPerBlock >> >(dev_T_New, dev_T_Last, dev_ccml, dev_H_Init, dx, dy, dz, tao, nx, ny, nz, dstOut,Vcast);
+			addKernel << <num_blocks, threadsPerBlock >> >(dev_T_New, dev_T_Last, dev_ccml, dev_H_Init, dx, dy, dz, tao, nx, ny, nz, dstOut,Vcast,T_casting);
 			dstOut = !dstOut;
 			HANDLE_ERROR(cudaMemcpy(T_Result, dev_T_Last, nx * ny * nz* sizeof(float), cudaMemcpyDeviceToHost));
 			float* Mean_TSurface = Calculation_MeanTemperature(nx, ny, nz, dy, ccml, T_Result, 0);  // calculation the mean surface temperature of steel billets in every cooling sections
 			
-			for (int temp = 0; temp < CoolSection;temp++)
-			  fitness[t / Num_Iter] += (Mean_TSurface[temp+MoldSection]-Taim[temp]);
+			for (int temp = 0; temp < CoolSection; temp++) {
+				fitness[t / Num_Iter] += pow((Mean_TSurface[temp + MoldSection] - Taim[temp]), 2);
+				gfitness[t / Num_Iter] += pow((Mean_TSurface[temp + MoldSection] - Taim[temp]), 2);
+			}
 			
 			if (t % (10 * Num_Iter) == 0)
 			{				
@@ -1117,6 +1156,20 @@ cudaError_t addWithCuda(float *T_Init, float dx, float dy, float dz, float tao, 
 			for (int i = 0; i < TestIter; i++)
 			{
 				fout << fitness[i] << ",";
+
+				fout << endl;
+			}
+		}
+		fout.close();
+
+		fout.open("F:\\data_zf\\gfitnesstest.txt");
+		if (!fout)
+			cout << "gfitnesstest is not open" << endl;
+		else
+		{
+			for (int i = 0; i < TestIter; i++)
+			{
+				fout << gfitness[i] << ",";
 
 				fout << endl;
 			}
